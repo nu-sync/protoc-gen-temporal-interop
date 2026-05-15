@@ -128,6 +128,12 @@ jobs:
 
       - uses: bufbuild/buf-setup-action@v1
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build local Rust generator
         run: cargo build -p protoc-gen-rust-temporal
 
@@ -159,6 +165,8 @@ jobs:
 - The workflow passes `RUST_TEMPORAL_WORKSPACE` to the harness.
 - The workflow leaves the TS side remote and pinned through
   `TS_TEMPORAL_VERSION=0.1.0`.
+- The workflow installs `protoc` before running the harness because the pinned
+  TS generator build requires `google.protobuf.descriptor.proto`.
 - The workflow uploads `interop/.dev-logs` on failure.
 - `cargo run -p interop-harness -- test` passes in CI.
 
@@ -205,6 +213,12 @@ jobs:
 
       - uses: bufbuild/buf-setup-action@v1
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build local TypeScript generator
         run: cargo build -p protoc-gen-ts-temporal
 
@@ -234,6 +248,7 @@ jobs:
 - The workflow does not set `RUST_TEMPORAL_PLUGIN` or
   `RUST_TEMPORAL_WORKSPACE` in the normal PR lane.
 - The Rust side comes from this repo's `pins/versions.env`.
+- The workflow installs `protoc` before building the local TS generator.
 - The workflow uploads `interop/.dev-logs` on failure.
 - `cargo run -p interop-harness -- test` passes in CI.
 
