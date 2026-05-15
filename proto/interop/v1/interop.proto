@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package interop.v1;
+
+import "google/protobuf/empty.proto";
+import "temporal/v1/temporal.proto";
+
+message RunRequest {
+  string case_id = 1;
+  string customer_id = 2;
+}
+
+message RunResponse {
+  string case_id = 1;
+  string customer_id = 2;
+  string finish_reason = 3;
+  string observed_stage = 4;
+}
+
+message FinishRequest {
+  string reason = 1;
+}
+
+message Status {
+  string stage = 1;
+  string case_id = 2;
+}
+
+service InteropService {
+  option (temporal.v1.service) = {
+    task_queue: "interop"
+  };
+
+  rpc Run(RunRequest) returns (RunResponse) {
+    option (temporal.v1.workflow) = {
+      name: "interop.v1.InteropService.Run"
+      query: [{ ref: "GetStatus" }]
+      signal: [{ ref: "Finish" }]
+    };
+  }
+
+  rpc GetStatus(google.protobuf.Empty) returns (Status) {
+    option (temporal.v1.query) = {
+      name: "interop.v1.InteropService.GetStatus"
+    };
+  }
+
+  rpc Finish(FinishRequest) returns (google.protobuf.Empty) {
+    option (temporal.v1.signal) = {
+      name: "interop.v1.InteropService.Finish"
+    };
+  }
+}
+

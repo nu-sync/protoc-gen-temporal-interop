@@ -1,0 +1,21 @@
+[package]
+name = "interop-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+interop-proto = { path = "../interop-proto" }
+temporalio-client.workspace = true
+temporalio-common.workspace = true
+temporalio-sdk.workspace = true
+temporalio-sdk-core.workspace = true
+temporalio-macros.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,25 @@
+{
+  "name": "protoc-gen-temporal-interop-ts-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cli": "tsx ./src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "^2.12.0",
+    "@nu-sync/temporal-protobuf-es": "^0.0.1",
+    "@temporalio/client": "^1.17.1",
+    "@temporalio/common": "^1.17.1",
+    "@temporalio/workflow": "^1.17.1"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.50.0",
+    "@bufbuild/protoc-gen-es": "^2.12.0",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.5.0"
+  }
+}
+

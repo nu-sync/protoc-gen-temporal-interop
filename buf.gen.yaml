@@ -1,0 +1,21 @@
+version: v2
+clean: true
+plugins:
+  - local: protoc-gen-prost
+    out: crates/interop-proto/src/gen
+    opt:
+      - bytes=bytes::Bytes
+      - file_descriptor_set
+  - local: protoc-gen-rust-temporal
+    out: crates/interop-proto/src/gen
+    opt:
+      - workflows=true
+  - local: protoc-gen-es
+    out: ts-client/gen
+    include_imports: true
+    opt:
+      - target=ts
+      - import_extension=none
+  - local: protoc-gen-ts-temporal
+    out: ts-client/gen
+
