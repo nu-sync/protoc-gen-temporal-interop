@@ -15,13 +15,27 @@ jobs:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
       - uses: bufbuild/buf-setup-action@v1
+      - uses: arduino/setup-protoc@v3
+        with:
+          version: "27.x"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run interop harness
         run: cargo run -p interop-harness -- test
+      - name: Print logs
+        if: failure()
+        run: |
+          if [ -d .dev-logs ]; then
+            for log in .dev-logs/*.log; do
+              echo "::group::$(basename "$log")"
+              sed -n '1,240p' "$log"
+              echo "::endgroup::"
+            done
+          fi
       - name: Upload logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: dev-logs
           path: .dev-logs
+          include-hidden-files: true
           if-no-files-found: ignore
-
