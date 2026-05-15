@@ -25,8 +25,9 @@ Override inputs with:
 - `RUST_TEMPORAL_PLUGIN=/path/to/protoc-gen-rust-temporal`
 - `TS_TEMPORAL_PLUGIN=/path/to/protoc-gen-ts-temporal`
 - `TS_TEMPORAL_SOURCE=/path/to/protoc-gen-ts-temporal`
+- `TS_TEMPORAL_VERSION=0.1.0`
 
 The v0 harness intentionally source-pairs Rust generated code with the Rust
-runtime crates. Release-mode Rust pins are out of scope until the generator,
+runtime crates by patching them to the resolved Rust workspace for Rust checks
+and worker builds. Release-mode Rust pins are out of scope until the generator,
 runtime, and bridge ship as a coordinated release.
-

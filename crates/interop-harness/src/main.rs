@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
@@ -41,6 +42,7 @@ struct Paths {
     tool_bin: PathBuf,
     cargo_bin: PathBuf,
     rust_checkout: PathBuf,
+    cargo_patch_config: PathBuf,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -71,6 +73,7 @@ impl Paths {
             tool_bin: tools.join("bin"),
             cargo_bin: tools.join("cargo/bin"),
             rust_checkout: root.join(".dev-rust"),
+            cargo_patch_config: tools.join("cargo-patch.toml"),
             tools,
             root,
         }
@@ -119,12 +122,13 @@ async fn run_gen(paths: &Paths) -> Result<()> {
 
 async fn run_test(paths: &Paths) -> Result<()> {
     run_gen(paths).await?;
+    let _lockfile_guard = LockfileGuard::new(paths.root.join("Cargo.lock"))?;
 
     run_logged(
         paths,
         "cargo-check-interop-proto",
         "cargo",
-        ["check", "-p", "interop-proto"],
+        cargo_args(paths, ["check", "-p", "interop-proto"]),
         &paths.root,
         &[],
         Duration::from_secs(120),
@@ -134,7 +138,7 @@ async fn run_test(paths: &Paths) -> Result<()> {
         paths,
         "cargo-check-interop-worker",
         "cargo",
-        ["check", "-p", "interop-worker"],
+        cargo_args(paths, ["check", "-p", "interop-worker"]),
         &paths.root,
         &[],
         Duration::from_secs(120),
@@ -154,7 +158,7 @@ async fn run_test(paths: &Paths) -> Result<()> {
         paths,
         "cargo-build-interop-worker",
         "cargo",
-        ["build", "-p", "interop-worker"],
+        cargo_args(paths, ["build", "-p", "interop-worker"]),
         &paths.root,
         &[],
         Duration::from_secs(120),
@@ -188,16 +192,19 @@ async fn run_runtime(paths: &Paths) -> Result<()> {
         paths,
         "worker",
         "cargo",
-        [
-            "run",
-            "-p",
-            "interop-worker",
-            "--",
-            "--target-address",
-            &target_address,
-            "--namespace",
-            "default",
-        ],
+        cargo_args(
+            paths,
+            [
+                "run",
+                "-p",
+                "interop-worker",
+                "--",
+                "--target-address",
+                target_address.as_str(),
+                "--namespace",
+                "default",
+            ],
+        ),
         &paths.root,
         &[],
     )
@@ -274,7 +281,9 @@ fn load_pins(root: &Path) -> Result<Pins> {
 }
 
 async fn ensure_tools(paths: &Paths, pins: &Pins) -> Result<OsString> {
-    ensure_rust_plugin(paths, pins).await?;
+    let rust_workspace = ensure_rust_workspace(paths, pins).await?;
+    write_cargo_patch_config(paths, &rust_workspace)?;
+    ensure_rust_plugin(paths, &rust_workspace).await?;
     ensure_ts_plugin(paths, pins).await?;
     ensure_prost_plugin(paths).await?;
 
@@ -289,25 +298,29 @@ async fn ensure_tools(paths: &Paths, pins: &Pins) -> Result<OsString> {
     std::env::join_paths(entries).context("join PATH entries")
 }
 
-async fn ensure_rust_plugin(paths: &Paths, pins: &Pins) -> Result<()> {
-    if let Ok(plugin) = std::env::var("RUST_TEMPORAL_PLUGIN") {
-        copy_tool(&plugin, &paths.tool_bin.join("protoc-gen-rust-temporal"))?;
-        return Ok(());
-    }
-
-    let workspace = if let Ok(workspace) = std::env::var("RUST_TEMPORAL_WORKSPACE") {
+async fn ensure_rust_workspace(paths: &Paths, pins: &Pins) -> Result<PathBuf> {
+    if let Ok(workspace) = std::env::var("RUST_TEMPORAL_WORKSPACE") {
         PathBuf::from(workspace)
     } else {
         ensure_rust_checkout(paths, pins).await?;
         paths.rust_checkout.clone()
-    };
+    }
+    .canonicalize()
+    .context("resolve Rust Temporal workspace")
+}
+
+async fn ensure_rust_plugin(paths: &Paths, workspace: &Path) -> Result<()> {
+    if let Ok(plugin) = std::env::var("RUST_TEMPORAL_PLUGIN") {
+        copy_tool(&plugin, &paths.tool_bin.join("protoc-gen-rust-temporal"))?;
+        return Ok(());
+    }
 
     run_logged(
         paths,
         "build-rust-plugin",
         "cargo",
         ["build", "-p", "protoc-gen-rust-temporal"],
-        &workspace,
+        workspace,
         &[],
         Duration::from_secs(120),
     )
@@ -357,19 +370,7 @@ async fn ensure_ts_plugin(paths: &Paths, pins: &Pins) -> Result<()> {
     let workspace = if let Ok(source) = std::env::var("TS_TEMPORAL_SOURCE") {
         PathBuf::from(source)
     } else {
-        let sibling = paths
-            .root
-            .parent()
-            .unwrap_or(&paths.root)
-            .join("protoc-gen-ts-temporal");
-        if sibling
-            .join("crates/protoc-gen-ts-temporal/Cargo.toml")
-            .exists()
-        {
-            sibling
-        } else {
-            ensure_ts_checkout(paths, pins).await?
-        }
+        ensure_ts_checkout(paths, pins).await?
     };
 
     run_logged(
@@ -424,6 +425,68 @@ async fn ensure_ts_checkout(paths: &Paths, pins: &Pins) -> Result<PathBuf> {
     Ok(checkout)
 }
 
+fn write_cargo_patch_config(paths: &Paths, rust_workspace: &Path) -> Result<()> {
+    let runtime_path = rust_workspace.join("crates/temporal-proto-runtime");
+    let bridge_path = rust_workspace.join("crates/temporal-proto-runtime-bridge");
+    ensure!(
+        runtime_path.join("Cargo.toml").is_file(),
+        "missing temporal-proto-runtime crate at {}",
+        runtime_path.display()
+    );
+    ensure!(
+        bridge_path.join("Cargo.toml").is_file(),
+        "missing temporal-proto-runtime-bridge crate at {}",
+        bridge_path.display()
+    );
+
+    let config_dir = paths
+        .cargo_patch_config
+        .parent()
+        .context("Cargo patch config path has no parent directory")?;
+    fs::create_dir_all(config_dir).context("create Cargo patch config directory")?;
+    let contents = format!(
+        "[patch.\"https://github.com/nu-sync/protoc-gen-rust-temporal\"]\n\
+         temporal-proto-runtime = {{ path = \"{}\" }}\n\
+         temporal-proto-runtime-bridge = {{ path = \"{}\" }}\n",
+        toml_path(&runtime_path)?,
+        toml_path(&bridge_path)?
+    );
+    fs::write(&paths.cargo_patch_config, contents)
+        .with_context(|| format!("write {}", paths.cargo_patch_config.display()))
+}
+
+struct LockfileGuard {
+    path: PathBuf,
+    original: Option<Vec<u8>>,
+}
+
+impl LockfileGuard {
+    fn new(path: impl Into<PathBuf>) -> Result<Self> {
+        let path = path.into();
+        let original = match fs::read(&path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error).with_context(|| format!("read {}", path.display()));
+            }
+        };
+        Ok(Self { path, original })
+    }
+}
+
+impl Drop for LockfileGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(contents) => {
+                let _ = fs::write(&self.path, contents);
+            }
+            None => {
+                let _ = fs::remove_file(&self.path);
+            }
+        }
+    }
+}
+
 async fn ensure_prost_plugin(paths: &Paths) -> Result<()> {
     if which("protoc-gen-prost").is_some() {
         return Ok(());
@@ -449,6 +512,19 @@ async fn ensure_prost_plugin(paths: &Paths) -> Result<()> {
     .await
 }
 
+fn cargo_args<I, S>(paths: &Paths, args: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut all_args = vec![
+        OsString::from("--config"),
+        paths.cargo_patch_config.as_os_str().to_os_string(),
+    ];
+    all_args.extend(args.into_iter().map(|arg| arg.as_ref().to_os_string()));
+    all_args
+}
+
 async fn run_logged<I, S>(
     paths: &Paths,
     name: &str,
@@ -464,10 +540,7 @@ where
 {
     let mut child = command_with_log(paths, name, program, args, cwd, envs)
         .with_context(|| format!("spawn {name}"))?;
-    let status = timeout(limit, child.wait())
-        .await
-        .with_context(|| format!("{name} timed out after {} seconds", limit.as_secs()))?
-        .with_context(|| format!("wait for {name}"))?;
+    let status = wait_for_child(&mut child, name, limit).await?;
     ensure!(
         status.success(),
         "{name} failed with {status}; see {}",
@@ -503,16 +576,22 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
+    let args = args
+        .into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .collect::<Vec<_>>();
     let log_path = paths.logs.join(format!("{name}.log"));
-    let stdout =
+    let mut stdout =
         File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
+    writeln!(stdout, "$ {}", format_command(program, &args))
+        .with_context(|| format!("write command header to {}", log_path.display()))?;
     let stderr = stdout
         .try_clone()
         .with_context(|| format!("clone {}", log_path.display()))?;
 
     let mut command = Command::new(program);
     command
-        .args(args)
+        .args(&args)
         .current_dir(cwd)
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
@@ -520,6 +599,17 @@ where
         command.env(key, value);
     }
     command.spawn().with_context(|| format!("run {program}"))
+}
+
+async fn wait_for_child(child: &mut Child, name: &str, limit: Duration) -> Result<ExitStatus> {
+    match timeout(limit, child.wait()).await {
+        Ok(status) => status.with_context(|| format!("wait for {name}")),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = timeout(Duration::from_secs(5), child.wait()).await;
+            bail!("{name} timed out after {} seconds", limit.as_secs())
+        }
+    }
 }
 
 async fn shutdown_child(child: &mut Child, limit: Duration) -> Result<()> {
@@ -560,6 +650,24 @@ fn which(bin: &str) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn format_command(program: &str, args: &[OsString]) -> String {
+    std::iter::once(program.to_string())
+        .chain(args.iter().map(|arg| {
+            let arg = arg.to_string_lossy();
+            if arg.chars().any(char::is_whitespace) {
+                format!("{:?}", arg.as_ref())
+            } else {
+                arg.into_owned()
+            }
+        }))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn toml_path(path: &Path) -> Result<String> {
+    Ok(path_str(path)?.replace('\\', "\\\\"))
 }
 
 fn path_str(path: &Path) -> Result<&str> {
