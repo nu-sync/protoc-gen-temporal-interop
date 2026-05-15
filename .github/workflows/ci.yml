@@ -5,24 +5,51 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   interop:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: ts-client/package-lock.json
       - uses: dtolnay/rust-toolchain@stable
-      - uses: bufbuild/buf-setup-action@v1
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          path: |
+            .dev-tools
+            .dev-rust
+            /tmp/temporal-sdk-rust-0.1.0
+          key: harness-tools-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'ts-client/package-lock.json', 'pins/versions.env') }}
+          restore-keys: |
+            harness-tools-${{ runner.os }}-
       - uses: arduino/setup-protoc@v3
         with:
           version: "27.x"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run interop harness
-        run: cargo run -p interop-harness -- test
+        run: |
+          started_at=$(date +%s)
+          cargo run -p interop-harness -- test
+          elapsed=$(( $(date +%s) - started_at ))
+          {
+            echo "### Interop harness timing"
+            echo
+            echo "- Total \`cargo run -p interop-harness -- test\`: ${elapsed}s"
+            echo
+            if [ -f .dev-logs/timing-summary.md ]; then
+              cat .dev-logs/timing-summary.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Print logs
         if: failure()
         run: |
@@ -35,7 +62,7 @@ jobs:
           fi
       - name: Upload logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: dev-logs
           path: .dev-logs
