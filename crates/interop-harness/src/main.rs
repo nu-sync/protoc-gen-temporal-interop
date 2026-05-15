@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use clap::{Parser, Subcommand};
@@ -45,6 +45,17 @@ struct Paths {
     cargo_patch_config: PathBuf,
 }
 
+#[derive(Debug, Default)]
+struct TimingSummary {
+    entries: Vec<TimingEntry>,
+}
+
+#[derive(Debug)]
+struct TimingEntry {
+    name: String,
+    duration: Duration,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -59,10 +70,14 @@ async fn main() -> Result<()> {
     fs::create_dir_all(&paths.logs).context("create .dev-logs")?;
     fs::create_dir_all(&paths.tool_bin).context("create tool bin directory")?;
 
+    let mut timings = TimingSummary::default();
     match cli.command {
-        Commands::Gen => run_gen(&paths).await,
-        Commands::Test => run_test(&paths).await,
+        Commands::Gen => run_gen(&paths, &mut timings).await?,
+        Commands::Test => run_test(&paths, &mut timings).await?,
     }
+    timings.write(&paths)?;
+    timings.print();
+    Ok(())
 }
 
 impl Paths {
@@ -80,95 +95,152 @@ impl Paths {
     }
 }
 
-async fn run_gen(paths: &Paths) -> Result<()> {
+impl TimingSummary {
+    fn record(&mut self, name: impl Into<String>, duration: Duration) {
+        self.entries.push(TimingEntry {
+            name: name.into(),
+            duration,
+        });
+    }
+
+    fn write(&self, paths: &Paths) -> Result<()> {
+        fs::write(paths.logs.join("timing-summary.md"), self.markdown())
+            .context("write timing summary")
+    }
+
+    fn print(&self) {
+        println!();
+        println!("interop timing summary:");
+        for entry in &self.entries {
+            println!("  {:>8.2}s {}", entry.duration.as_secs_f64(), entry.name);
+        }
+    }
+
+    fn markdown(&self) -> String {
+        let mut summary = String::from("| Step | Seconds |\n| --- | ---: |\n");
+        for entry in &self.entries {
+            summary.push_str(&format!(
+                "| `{}` | {:.2} |\n",
+                entry.name,
+                entry.duration.as_secs_f64()
+            ));
+        }
+        summary
+    }
+}
+
+async fn run_gen(paths: &Paths, timings: &mut TimingSummary) -> Result<()> {
     let pins = load_pins(&paths.root)?;
-    let tool_path = ensure_tools(paths, &pins).await?;
+    let tool_path = tool_path(paths)?;
 
-    run_logged(
-        paths,
+    timings.record(
         "npm-ci",
-        "npm",
-        ["--prefix", "ts-client", "ci", "--min-release-age=0"],
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "npm-ci",
+            "npm",
+            ["--prefix", "ts-client", "ci", "--min-release-age=0"],
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
 
-    run_logged(
-        paths,
+    ensure_tools(paths, &pins, timings, &tool_path).await?;
+
+    timings.record(
         "buf-dep-update",
-        "buf",
-        ["dep", "update"],
-        &paths.root,
-        &[("PATH", tool_path.clone())],
-        Duration::from_secs(60),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "buf-dep-update",
+            "buf",
+            ["dep", "update"],
+            &paths.root,
+            &[("PATH", tool_path.clone())],
+            Duration::from_secs(60),
+        )
+        .await?,
+    );
 
-    run_logged(
-        paths,
+    timings.record(
         "buf-generate",
-        "buf",
-        ["generate"],
-        &paths.root,
-        &[("PATH", tool_path)],
-        Duration::from_secs(60),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "buf-generate",
+            "buf",
+            ["generate"],
+            &paths.root,
+            &[("PATH", tool_path)],
+            Duration::from_secs(60),
+        )
+        .await?,
+    );
 
     Ok(())
 }
 
-async fn run_test(paths: &Paths) -> Result<()> {
-    run_gen(paths).await?;
+async fn run_test(paths: &Paths, timings: &mut TimingSummary) -> Result<()> {
+    run_gen(paths, timings).await?;
     let _lockfile_guard = LockfileGuard::new(paths.root.join("Cargo.lock"))?;
 
-    run_logged(
-        paths,
+    timings.record(
         "cargo-check-interop-proto",
-        "cargo",
-        cargo_args(paths, ["check", "-p", "interop-proto"]),
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
-    run_logged(
-        paths,
+        run_logged(
+            paths,
+            "cargo-check-interop-proto",
+            "cargo",
+            cargo_args(paths, ["check", "-p", "interop-proto"]),
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
+    timings.record(
         "cargo-check-interop-worker",
-        "cargo",
-        cargo_args(paths, ["check", "-p", "interop-worker"]),
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
-    run_logged(
-        paths,
+        run_logged(
+            paths,
+            "cargo-check-interop-worker",
+            "cargo",
+            cargo_args(paths, ["check", "-p", "interop-worker"]),
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
+    timings.record(
         "npm-typecheck",
-        "npm",
-        ["--prefix", "ts-client", "run", "typecheck"],
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
-    run_logged(
-        paths,
+        run_logged(
+            paths,
+            "npm-typecheck",
+            "npm",
+            ["--prefix", "ts-client", "run", "typecheck"],
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
+    timings.record(
         "cargo-build-interop-worker",
-        "cargo",
-        cargo_args(paths, ["build", "-p", "interop-worker"]),
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "cargo-build-interop-worker",
+            "cargo",
+            cargo_args(paths, ["build", "-p", "interop-worker"]),
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
 
-    run_runtime(paths).await
+    run_runtime(paths, timings).await
 }
 
-async fn run_runtime(paths: &Paths) -> Result<()> {
+async fn run_runtime(paths: &Paths, timings: &mut TimingSummary) -> Result<()> {
     let server_stdout = File::create(paths.logs.join("temporal-server.log"))
         .context("create Temporal server log")?;
     let server_stderr = server_stdout
@@ -178,6 +250,7 @@ async fn run_runtime(paths: &Paths) -> Result<()> {
         .exe(default_cached_download())
         .ui(false)
         .build();
+    let started_at = Instant::now();
     let mut server = timeout(
         Duration::from_secs(60),
         server_config
@@ -186,8 +259,10 @@ async fn run_runtime(paths: &Paths) -> Result<()> {
     .await
     .context("Temporal dev server start timed out after 60 seconds")?
     .context("start Temporal dev server")?;
+    timings.record("temporal-dev-server-start", started_at.elapsed());
     let target_address = server.target.to_string();
 
+    let started_at = Instant::now();
     let mut worker = spawn_logged(
         paths,
         "worker",
@@ -209,6 +284,7 @@ async fn run_runtime(paths: &Paths) -> Result<()> {
         &[],
     )
     .await?;
+    timings.record("worker-spawn", started_at.elapsed());
 
     let case_id = format!("case-{}", std::process::id());
     let customer_id = format!("customer-{case_id}");
@@ -238,10 +314,15 @@ async fn run_runtime(paths: &Paths) -> Result<()> {
         &[],
         Duration::from_secs(45),
     )
-    .await;
+    .await
+    .inspect(|duration| timings.record("ts-cli", *duration));
 
+    let started_at = Instant::now();
     let worker_shutdown = shutdown_child(&mut worker, Duration::from_secs(10)).await;
+    timings.record("worker-shutdown", started_at.elapsed());
+    let started_at = Instant::now();
     let server_shutdown = server.shutdown().await.context("shut down Temporal server");
+    timings.record("temporal-dev-server-shutdown", started_at.elapsed());
 
     cli_result?;
     worker_shutdown?;
@@ -280,13 +361,21 @@ fn load_pins(root: &Path) -> Result<Pins> {
     })
 }
 
-async fn ensure_tools(paths: &Paths, pins: &Pins) -> Result<OsString> {
-    let rust_workspace = ensure_rust_workspace(paths, pins).await?;
+async fn ensure_tools(
+    paths: &Paths,
+    pins: &Pins,
+    timings: &mut TimingSummary,
+    tool_path: &OsString,
+) -> Result<()> {
+    let rust_workspace = ensure_rust_workspace(paths, pins, timings).await?;
     write_cargo_patch_config(paths, &rust_workspace)?;
-    ensure_rust_plugin(paths, &rust_workspace).await?;
-    ensure_ts_plugin(paths, pins).await?;
-    ensure_prost_plugin(paths).await?;
+    ensure_rust_plugin(paths, &rust_workspace, timings, tool_path).await?;
+    ensure_ts_plugin(paths, pins, timings, tool_path).await?;
+    ensure_prost_plugin(paths, timings).await?;
+    Ok(())
+}
 
+fn tool_path(paths: &Paths) -> Result<OsString> {
     let mut entries = vec![
         paths.tool_bin.clone(),
         paths.cargo_bin.clone(),
@@ -298,70 +387,98 @@ async fn ensure_tools(paths: &Paths, pins: &Pins) -> Result<OsString> {
     std::env::join_paths(entries).context("join PATH entries")
 }
 
-async fn ensure_rust_workspace(paths: &Paths, pins: &Pins) -> Result<PathBuf> {
+async fn ensure_rust_workspace(
+    paths: &Paths,
+    pins: &Pins,
+    timings: &mut TimingSummary,
+) -> Result<PathBuf> {
     if let Ok(workspace) = std::env::var("RUST_TEMPORAL_WORKSPACE") {
         PathBuf::from(workspace)
     } else {
-        ensure_rust_checkout(paths, pins).await?;
+        ensure_rust_checkout(paths, pins, timings).await?;
         paths.rust_checkout.clone()
     }
     .canonicalize()
     .context("resolve Rust Temporal workspace")
 }
 
-async fn ensure_rust_plugin(paths: &Paths, workspace: &Path) -> Result<()> {
+async fn ensure_rust_plugin(
+    paths: &Paths,
+    workspace: &Path,
+    timings: &mut TimingSummary,
+    tool_path: &OsString,
+) -> Result<()> {
     if let Ok(plugin) = std::env::var("RUST_TEMPORAL_PLUGIN") {
         copy_tool(&plugin, &paths.tool_bin.join("protoc-gen-rust-temporal"))?;
         return Ok(());
     }
 
-    run_logged(
-        paths,
+    timings.record(
         "build-rust-plugin",
-        "cargo",
-        ["build", "-p", "protoc-gen-rust-temporal"],
-        workspace,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "build-rust-plugin",
+            "cargo",
+            ["build", "-p", "protoc-gen-rust-temporal"],
+            workspace,
+            &[("PATH", tool_path.clone())],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
     copy_tool(
         workspace.join("target/debug/protoc-gen-rust-temporal"),
         &paths.tool_bin.join("protoc-gen-rust-temporal"),
     )
 }
 
-async fn ensure_rust_checkout(paths: &Paths, pins: &Pins) -> Result<()> {
+async fn ensure_rust_checkout(
+    paths: &Paths,
+    pins: &Pins,
+    timings: &mut TimingSummary,
+) -> Result<()> {
     if !paths.rust_checkout.exists() {
-        run_logged(
-            paths,
+        timings.record(
             "clone-rust-temporal",
-            "git",
-            [
-                "clone",
-                &pins.rust_temporal_repository,
-                path_str(&paths.rust_checkout)?,
-            ],
-            &paths.root,
-            &[],
-            Duration::from_secs(120),
-        )
-        .await?;
+            run_logged(
+                paths,
+                "clone-rust-temporal",
+                "git",
+                [
+                    "clone",
+                    &pins.rust_temporal_repository,
+                    path_str(&paths.rust_checkout)?,
+                ],
+                &paths.root,
+                &[],
+                Duration::from_secs(120),
+            )
+            .await?,
+        );
     }
 
-    run_logged(
-        paths,
+    timings.record(
         "checkout-rust-temporal",
-        "git",
-        ["checkout", &pins.rust_temporal_ref],
-        &paths.rust_checkout,
-        &[],
-        Duration::from_secs(60),
-    )
-    .await
+        run_logged(
+            paths,
+            "checkout-rust-temporal",
+            "git",
+            ["checkout", &pins.rust_temporal_ref],
+            &paths.rust_checkout,
+            &[],
+            Duration::from_secs(60),
+        )
+        .await?,
+    );
+    Ok(())
 }
 
-async fn ensure_ts_plugin(paths: &Paths, pins: &Pins) -> Result<()> {
+async fn ensure_ts_plugin(
+    paths: &Paths,
+    pins: &Pins,
+    timings: &mut TimingSummary,
+    tool_path: &OsString,
+) -> Result<()> {
     if let Ok(plugin) = std::env::var("TS_TEMPORAL_PLUGIN") {
         copy_tool(&plugin, &paths.tool_bin.join("protoc-gen-ts-temporal"))?;
         return Ok(());
@@ -370,58 +487,71 @@ async fn ensure_ts_plugin(paths: &Paths, pins: &Pins) -> Result<()> {
     let workspace = if let Ok(source) = std::env::var("TS_TEMPORAL_SOURCE") {
         PathBuf::from(source)
     } else {
-        ensure_ts_checkout(paths, pins).await?
+        ensure_ts_checkout(paths, pins, timings).await?
     };
 
-    run_logged(
-        paths,
+    timings.record(
         "build-ts-plugin",
-        "cargo",
-        ["build", "--release", "-p", "protoc-gen-ts-temporal"],
-        &workspace,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "build-ts-plugin",
+            "cargo",
+            ["build", "--release", "-p", "protoc-gen-ts-temporal"],
+            &workspace,
+            &[("PATH", tool_path.clone())],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
     copy_tool(
         workspace.join("target/release/protoc-gen-ts-temporal"),
         &paths.tool_bin.join("protoc-gen-ts-temporal"),
     )
 }
 
-async fn ensure_ts_checkout(paths: &Paths, pins: &Pins) -> Result<PathBuf> {
+async fn ensure_ts_checkout(
+    paths: &Paths,
+    pins: &Pins,
+    timings: &mut TimingSummary,
+) -> Result<PathBuf> {
     let checkout = paths.tools.join(format!(
         "protoc-gen-ts-temporal-{}",
         pins.ts_temporal_version
     ));
     if !checkout.exists() {
-        run_logged(
-            paths,
+        timings.record(
             "clone-ts-temporal",
-            "git",
-            [
-                "clone",
-                "https://github.com/nu-sync/protoc-gen-ts-temporal",
-                path_str(&checkout)?,
-            ],
-            &paths.root,
-            &[],
-            Duration::from_secs(120),
-        )
-        .await?;
+            run_logged(
+                paths,
+                "clone-ts-temporal",
+                "git",
+                [
+                    "clone",
+                    "https://github.com/nu-sync/protoc-gen-ts-temporal",
+                    path_str(&checkout)?,
+                ],
+                &paths.root,
+                &[],
+                Duration::from_secs(120),
+            )
+            .await?,
+        );
     }
 
     let tag = format!("v{}", pins.ts_temporal_version);
-    run_logged(
-        paths,
+    timings.record(
         "checkout-ts-temporal",
-        "git",
-        ["checkout", &tag],
-        &checkout,
-        &[],
-        Duration::from_secs(60),
-    )
-    .await?;
+        run_logged(
+            paths,
+            "checkout-ts-temporal",
+            "git",
+            ["checkout", &tag],
+            &checkout,
+            &[],
+            Duration::from_secs(60),
+        )
+        .await?,
+    );
     Ok(checkout)
 }
 
@@ -487,29 +617,33 @@ impl Drop for LockfileGuard {
     }
 }
 
-async fn ensure_prost_plugin(paths: &Paths) -> Result<()> {
-    if which("protoc-gen-prost").is_some() {
+async fn ensure_prost_plugin(paths: &Paths, timings: &mut TimingSummary) -> Result<()> {
+    if which("protoc-gen-prost").is_some() || paths.cargo_bin.join("protoc-gen-prost").is_file() {
         return Ok(());
     }
 
-    run_logged(
-        paths,
+    timings.record(
         "install-protoc-gen-prost",
-        "cargo",
-        [
-            "install",
-            "--root",
-            path_str(&paths.tools.join("cargo"))?,
-            "--locked",
-            "protoc-gen-prost",
-            "--version",
-            "0.5.0",
-        ],
-        &paths.root,
-        &[],
-        Duration::from_secs(120),
-    )
-    .await
+        run_logged(
+            paths,
+            "install-protoc-gen-prost",
+            "cargo",
+            [
+                "install",
+                "--root",
+                path_str(&paths.tools.join("cargo"))?,
+                "--locked",
+                "protoc-gen-prost",
+                "--version",
+                "0.5.0",
+            ],
+            &paths.root,
+            &[],
+            Duration::from_secs(120),
+        )
+        .await?,
+    );
+    Ok(())
 }
 
 fn cargo_args<I, S>(paths: &Paths, args: I) -> Vec<OsString>
@@ -533,20 +667,21 @@ async fn run_logged<I, S>(
     cwd: &Path,
     envs: &[(&str, OsString)],
     limit: Duration,
-) -> Result<()>
+) -> Result<Duration>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
     let mut child = command_with_log(paths, name, program, args, cwd, envs)
         .with_context(|| format!("spawn {name}"))?;
+    let started_at = Instant::now();
     let status = wait_for_child(&mut child, name, limit).await?;
     ensure!(
         status.success(),
         "{name} failed with {status}; see {}",
         paths.logs.join(format!("{name}.log")).display()
     );
-    Ok(())
+    Ok(started_at.elapsed())
 }
 
 async fn spawn_logged<I, S>(
