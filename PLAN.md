@@ -2,9 +2,10 @@
 
 ## Objective
 
-Build the smallest reliable black-box interop harness that proves a generated
-TypeScript Temporal client can drive a generated Rust Temporal worker over a
-real Temporal server.
+Build the smallest reliable black-box interop harness that proves handwritten
+TypeScript SDK code using generated contract constants can drive a handwritten
+Rust Temporal worker using generated contract constants over a real Temporal
+server.
 
 ## Ground Rules
 
@@ -12,12 +13,12 @@ real Temporal server.
   `protoc-gen-rust-temporal` or `protoc-gen-ts-temporal` until this repo's own
   harness passes locally and in this repo's CI.
 - Keep v0 source-paired to a concrete Rust checkout.
-- Do not depend on Rust `0.1.1`; it predates the required bridge and
-  `workflows=true` surface.
+- Do not depend on Rust releases that predate the contract-only generator and
+  runtime surface.
 - Do not rely on default Temporal names across languages.
 - Do not use `WorkflowOptions.id` in the v0 proto.
-- Do not claim true Empty payload transport until a test actually sends or
-  receives an Empty payload.
+- Keep `google.protobuf.Empty` as an explicit protobuf payload in the live
+  query path.
 - Treat `protoc-gen-es` as an npm tool that must be installed or explicitly
   resolved before code generation.
 - Keep implementation changes inside this repository until CI integration
@@ -35,8 +36,7 @@ real Temporal server.
    that repo's current branch for `TS_TEMPORAL_PLUGIN`, plus this repo's pinned
    Rust source ref.
 4. **Add release-mode CI later.** Only after Rust publishes a coordinated
-   generator/runtime/bridge release should this project add released Rust crate
-   pins.
+   generator/runtime release should this project add released Rust crate pins.
 
 Checkpoints 0-6 are the standalone build. Checkpoint 7 is downstream CI
 adoption. Checkpoint 8 is future release-mode hardening.
@@ -51,14 +51,11 @@ adoption. Checkpoint 8 is future release-mode hardening.
 - `protoc-gen-ts-temporal/examples/minimal/src/client.ts`: protobuf-es
   `create(Schema, ...)` client usage.
 - `protoc-gen-ts-temporal/crates/protoc-gen-ts-temporal/src/render.rs`:
-  generated `workflowId ?? crypto.randomUUID()` behavior and Empty query
-  zero-arg rendering.
+  generated contract constants and Empty schema inventory behavior.
 - `protoc-gen-rust-temporal/docs/sdk-shape.md`: `#[run(name = ...)]`
   requirement.
 - `protoc-gen-rust-temporal/examples/job-queue/crates/job-worker/src/lib.rs`:
   generated Rust constants used from SDK workflow/query/signal methods.
-- `protoc-gen-rust-temporal/crates/temporal-proto-runtime-bridge/Cargo.toml`:
-  `worker` feature gate.
 
 ## Checkpoint 0 - Pin Strategy
 
@@ -69,9 +66,7 @@ Deliverables:
 - Record `RUST_TEMPORAL_REPOSITORY`.
 - Choose and record a concrete `RUST_TEMPORAL_REF` that includes:
   - `temporal-proto-runtime`.
-  - `temporal-proto-runtime-bridge`.
-  - bridge `worker` feature.
-  - `workflows=true` worker-contract emit.
+  - contract-only `protoc-gen-rust-temporal` output.
 
 Validation:
 
@@ -81,7 +76,7 @@ grep -q '^TS_TEMPORAL_VERSION=0.1.0$' pins/versions.env
 grep -Eq '^RUST_TEMPORAL_REF=([0-9a-f]{40}|v[0-9]+[.][0-9]+[.][0-9]+.*)$' pins/versions.env
 ```
 
-Pause if no Rust ref with the required bridge and workflow surface is available.
+Pause if no Rust ref with the required contract-only surface is available.
 
 ## Checkpoint 1 - Workspace Scaffold
 
@@ -115,7 +110,7 @@ Deliverables:
 - `proto/interop/v1/interop.proto` exactly follows `SPEC.md`.
 - `buf.yaml`.
 - `buf.gen.yaml`.
-- Rust generation with `workflows=true`.
+- Rust contract generation with default plugin options.
 - TS generation with `protoc-gen-es`:
   - `include_imports: true`
   - `target=ts`
@@ -140,12 +135,8 @@ files.
 
 Deliverables:
 
-- `crates/interop-proto` uses source-paired Rust runtime crates.
-- `temporal-proto-runtime-bridge` is enabled with `features = ["worker"]`.
-- `interop-proto/src/lib.rs` re-exports
-  `temporal_proto_runtime_bridge as temporal_runtime`.
-- Worker implements generated `RunDefinition`.
-- Worker registers via generated `register_run_workflow`.
+- `crates/interop-proto` uses the source-paired Rust runtime crate.
+- Worker registers directly with `worker.register_workflow`.
 - Worker run method uses
   `#[run(name = temporal_contract::RUN_WORKFLOW_NAME)]`.
 - Query and signal methods use generated constants.
@@ -175,8 +166,9 @@ Deliverables:
 - CLI configures `payloadConverterPath`.
 - CLI constructs `RunRequest` and `FinishRequest` with protobuf-es
   `create(Schema, ...)`.
-- CLI starts generated `InteropServiceClient.run(...)` with explicit
+- CLI starts `RUN_WORKFLOW_NAME` on `RUN_TASK_QUEUE` with explicit
   `workflowId`.
+- CLI sends an explicit `google.protobuf.Empty` query input.
 - CLI queries, signals, waits for result, asserts result, and prints compact
   JSON.
 
@@ -186,8 +178,8 @@ Validation:
 npm --prefix ts-client run typecheck
 ```
 
-Pause if the generated TS API surface differs from the expected start/query/
-signal/result methods.
+Pause if the generated TS contract constants differ from the expected
+start/query/signal/result names.
 
 ## Checkpoint 5 - Harness
 

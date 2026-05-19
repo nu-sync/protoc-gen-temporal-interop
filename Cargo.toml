@@ -23,7 +23,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 prost = "0.13"
 temporal-proto-runtime = { git = "https://github.com/nu-sync/protoc-gen-rust-temporal", rev = "dae1bf54b60e96a643cb3bd6b314bcbf5715f383", features = ["sdk"] }
-temporal-proto-runtime-bridge = { git = "https://github.com/nu-sync/protoc-gen-rust-temporal", rev = "dae1bf54b60e96a643cb3bd6b314bcbf5715f383", features = ["worker"] }
 temporalio-client = "=0.4.0"
 temporalio-common = "=0.4.0"
 temporalio-sdk = "=0.4.0"

@@ -3,9 +3,9 @@ use futures_util::FutureExt as _;
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use interop_proto::TypedProtoMessage;
 use interop_proto::interop::v1::{FinishRequest, RunRequest, RunResponse, Status};
 use interop_proto::interop_v1_interop_service_temporal as temporal_contract;
+use interop_proto::{ProtoEmpty, TypedProtoMessage};
 use temporalio_client::{Client, ClientOptions, Connection, ConnectionOptions};
 #[allow(unused_imports)]
 use temporalio_macros::{init, query, run, signal, workflow, workflow_methods};
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     let mut worker = Worker::new(&runtime, client, WorkerOptions::new("interop").build())
         .map_err(|err| anyhow!(err.to_string()))
         .context("create worker")?;
-    temporal_contract::register_run_workflow::<InteropWorkflow>(&mut worker);
+    worker.register_workflow::<InteropWorkflow>();
 
     tracing::info!(task_queue = "interop", "interop worker polling");
     worker.run().await.context("run worker")
@@ -109,15 +109,14 @@ impl InteropWorkflow {
     }
 
     #[query(name = temporal_contract::GET_STATUS_QUERY_NAME)]
-    fn get_status(&self, _ctx: &WorkflowContextView) -> TypedProtoMessage<Status> {
+    fn get_status(
+        &self,
+        _ctx: &WorkflowContextView,
+        _input: TypedProtoMessage<ProtoEmpty>,
+    ) -> TypedProtoMessage<Status> {
         TypedProtoMessage(Status {
             stage: self.stage.to_string(),
             case_id: self.input.case_id.clone(),
         })
     }
-}
-
-impl temporal_contract::RunDefinition for InteropWorkflow {
-    type Input = RunRequest;
-    type Output = RunResponse;
 }

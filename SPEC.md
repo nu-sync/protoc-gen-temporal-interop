@@ -13,45 +13,42 @@
 This repository is the shared black-box integration test for
 `protoc-gen-ts-temporal` and `protoc-gen-rust-temporal`.
 
-It proves that a TypeScript client generated from a
-`temporal.v1.*`-annotated proto can start, query, signal, and complete a
-workflow implemented by a Rust Temporal worker generated from the same proto,
-through a real Temporal server.
+It proves that handwritten TypeScript SDK code using generated TypeScript
+contract constants can start, query, signal, and complete a workflow
+implemented by a handwritten Rust Temporal worker using generated Rust contract
+constants, through a real Temporal server.
 
 The tested boundary is:
 
 ```text
-generated TS client
+handwritten TS SDK client + generated TS contract constants
   -> @nu-sync/temporal-protobuf-es binary protobuf converter
   -> Temporal server
-  -> Rust worker using generated Rust contracts and temporal-proto-runtime-bridge
+  -> Rust worker using generated Rust contract constants and temporal-proto-runtime
   -> Rust workflow implementation
   -> Temporal server
-  -> generated TS handle query/result decode
+  -> TS SDK handle query/result decode
 ```
 
 The generator repositories already cover golden output and byte-level payload
 compatibility. This repository covers the runtime gap those tests cannot:
-whether the generated TS client can drive the generated Rust worker surface in
-the same Temporal execution.
+whether both SDKs agree on the same generated names and protobuf payload
+metadata in the same Temporal execution.
 
 ## Core Decision
 
 v0 is a **source-paired Rust interop harness**, not a released-version matrix.
 
-The Rust generator, `temporal-proto-runtime`, and
-`temporal-proto-runtime-bridge` must come from the same Rust source checkout
-while the required bridge and `workflows=true` worker-contract surface are not
-available as a coordinated release. Pairing a current Rust generator binary
-with older runtime crates is a runtime API mismatch, not an interop result.
+The Rust generator and `temporal-proto-runtime` must come from the same Rust
+source checkout until the contract-only generator/runtime pair is released
+together. Pairing a current Rust generator binary with older runtime crates is
+a runtime API mismatch, not an interop result.
 
 Release-mode Rust pins may be added only after a Rust release includes:
 
-- `protoc-gen-rust-temporal` with `--rust-temporal_opt=workflows=true`
-  workflow contracts and registration helpers.
+- contract-only `protoc-gen-rust-temporal` output.
 - `temporal-proto-runtime`.
-- `temporal-proto-runtime-bridge` with the `worker` feature.
-- Matching runtime facade signatures for the generated code.
+- matching `TypedProtoMessage<T>` behavior for the generated contract.
 
 Until then, CI must use a concrete Rust source ref recorded by this repository.
 Committed CI workflows must not contain placeholder refs.
@@ -62,8 +59,7 @@ Committed CI workflows must not contain placeholder refs.
 - Replace either repo's unit, golden, payload compatibility, or local example
   tests.
 - Test every `temporal.v1.*` annotation field.
-- Prove actual `google.protobuf.Empty` payload transport in v0. The initial
-  flow covers TS no-arg / void generated surfaces only.
+- Prove every `temporal.v1.*` annotation field.
 - Test generated workflow id templates in v0. The TS generator does not
   currently honor `WorkflowOptions.id`.
 - Ship a production demo application.
@@ -114,8 +110,8 @@ not placeholders. Required keys are:
 - `TS_TEMPORAL_VERSION`, initially `0.1.0`.
 - `RUST_TEMPORAL_REPOSITORY`, initially
   `https://github.com/nu-sync/protoc-gen-rust-temporal`.
-- `RUST_TEMPORAL_REF`, a real commit SHA or tag that contains the Rust bridge
-  and `workflows=true` worker-contract surface.
+- `RUST_TEMPORAL_REF`, a real commit SHA or tag that contains the Rust
+  contract-only generator/runtime surface.
 
 The repository is not CI-ready until `RUST_TEMPORAL_REF` is concrete.
 
@@ -193,10 +189,9 @@ service InteropService {
 }
 ```
 
-`google.protobuf.Empty` here covers generated no-arg / void API shape only.
-The TS generator renders Empty query inputs as zero query arguments, and signal
-outputs do not produce response payloads. True Empty payload transport is a
-later test case.
+`google.protobuf.Empty` query input is transported as an explicit protobuf
+payload. Signal outputs remain fire-and-forget and do not produce response
+payloads.
 
 ## Code Generation
 
@@ -205,14 +200,13 @@ later test case.
 Rust requirements:
 
 - Generate prost types into `crates/interop-proto/src/gen/`.
-- Run `protoc-gen-rust-temporal` with `workflows=true`.
-- `crates/interop-proto/src/lib.rs` must expose
-  `pub use temporal_proto_runtime_bridge as temporal_runtime;`.
-- `crates/interop-proto/Cargo.toml` must enable the bridge worker feature:
+- Run `protoc-gen-rust-temporal` with default contract-only options.
+- `crates/interop-proto/src/lib.rs` must re-export
+  `TypedProtoMessage` and `ProtoEmpty` from `temporal-proto-runtime`.
+- `crates/interop-proto/Cargo.toml` must depend on the runtime helper:
 
 ```toml
 temporal-proto-runtime = { path = "../../../protoc-gen-rust-temporal/crates/temporal-proto-runtime" }
-temporal-proto-runtime-bridge = { path = "../../../protoc-gen-rust-temporal/crates/temporal-proto-runtime-bridge", features = ["worker"] }
 ```
 
 The exact relative paths are implementation details, but source-paired Rust
@@ -239,18 +233,19 @@ TS requirements:
 ### Rust Worker
 
 The Rust worker owns the workflow implementation. Generated Rust code provides
-names, marker types, workflow definition traits, and registration helpers; it
-does not generate the workflow body.
+contract constants and `TemporalProtoMessage` impls; it does not generate the
+workflow body or worker registration.
 
 The worker must:
 
-1. Implement the generated `RunDefinition` trait on the SDK workflow type.
-2. Register the workflow through the generated `register_run_workflow` helper.
-3. Put the generated workflow name constant on the SDK run method:
+1. Register the workflow directly with `worker.register_workflow::<...>()`.
+2. Put the generated workflow name constant on the SDK run method:
    `#[run(name = temporal_contract::RUN_WORKFLOW_NAME)]`.
-4. Implement query and signal SDK methods using generated constants:
+3. Implement query and signal SDK methods using generated constants:
    `#[query(name = temporal_contract::GET_STATUS_QUERY_NAME)]` and
    `#[signal(name = temporal_contract::FINISH_SIGNAL_NAME)]`.
+4. Use `TypedProtoMessage<T>` at workflow, signal, query, and result payload
+   boundaries, including `TypedProtoMessage<ProtoEmpty>` for Empty query input.
 5. Keep workflow code deterministic: no client creation, external I/O,
    randomness, wall-clock reads, or raw Tokio concurrency inside workflow code.
 6. Wait for `Finish` before returning.
@@ -263,8 +258,9 @@ normalize this to `http://127.0.0.1:7233`.
 
 ### TypeScript CLI
 
-`ts-client/src/cli.ts` is the TypeScript side of the test. It must use the
-generated TS client, not raw Temporal SDK string names.
+`ts-client/src/cli.ts` is the TypeScript side of the test. It uses raw Temporal
+SDK calls, but imports generated contract constants instead of writing handler
+names or task queues by hand.
 
 Primary command:
 
@@ -282,11 +278,12 @@ The CLI must:
 1. Call `Connection.connect({ address })` with `host:port`, not an HTTP URL.
 2. Configure the protobuf-es binary converter through `payloadConverterPath`.
 3. Build workflow input with `create(RunRequestSchema, { caseId, customerId })`.
-4. Start the generated `InteropServiceClient.run(...)` method with
+4. Start `RUN_WORKFLOW_NAME` on `RUN_TASK_QUEUE` with
    `workflowId: "interop-${caseId}"`.
-5. Query `getStatus()` until it returns the expected `caseId`.
+5. Query `GET_STATUS_QUERY_NAME` with an explicit `google.protobuf.Empty`
+   payload until it returns the expected `caseId`.
 6. Build signal input with `create(FinishRequestSchema, { reason })`.
-7. Call the generated `finish(...)` signal method.
+7. Signal `FINISH_SIGNAL_NAME`.
 8. Await `result()`.
 9. Assert:
    - `result.caseId == --case-id`
@@ -315,8 +312,7 @@ The harness must:
    `RUST_TEMPORAL_REPOSITORY` plus `RUST_TEMPORAL_REF`.
 4. Build `protoc-gen-rust-temporal` from that Rust checkout unless
    `RUST_TEMPORAL_PLUGIN` is provided.
-5. Patch `temporal-proto-runtime` and `temporal-proto-runtime-bridge` to the
-   same Rust checkout.
+5. Patch `temporal-proto-runtime` to the same Rust checkout.
 6. Run `npm ci` in `ts-client/`.
 7. Ensure `protoc-gen-es` is discoverable.
 8. Run code generation.

@@ -3,9 +3,10 @@
 Black-box interop harness for `protoc-gen-ts-temporal` and
 `protoc-gen-rust-temporal`.
 
-The v0 proof starts a real Temporal dev server, runs a Rust worker generated
-from `proto/interop/v1/interop.proto`, and drives it through the generated
-TypeScript client.
+The proof starts a real Temporal dev server, runs a handwritten Rust worker
+using generated Rust contract constants, and drives it from TypeScript SDK code
+using generated TypeScript contract constants plus
+`@nu-sync/temporal-protobuf-es`.
 
 ## Quick Start
 
@@ -15,7 +16,7 @@ cargo run -p interop-harness -- test
 
 The harness creates ignored local working directories:
 
-- `.dev-rust/` for the pinned Rust generator/runtime/bridge checkout.
+- `.dev-rust/` for the pinned Rust generator/runtime checkout.
 - `.dev-tools/` for built generator binaries and temporary source checkouts.
 - `.dev-logs/` for command, worker, and client logs.
 
@@ -27,7 +28,7 @@ Override inputs with:
 - `TS_TEMPORAL_SOURCE=/path/to/protoc-gen-ts-temporal`
 - `TS_TEMPORAL_VERSION=0.1.0`
 
-The v0 harness intentionally source-pairs Rust generated code with the Rust
-runtime crates by patching them to the resolved Rust workspace for Rust checks
-and worker builds. Release-mode Rust pins are out of scope until the generator,
-runtime, and bridge ship as a coordinated release.
+The harness intentionally source-pairs generated Rust contract output with the
+Rust runtime crate by patching it to the resolved Rust workspace for Rust
+checks and worker builds. Release-mode Rust pins are updated after the
+generator/runtime contract lands.

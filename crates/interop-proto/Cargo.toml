@@ -10,4 +10,3 @@ publish.workspace = true
 anyhow.workspace = true
 prost.workspace = true
 temporal-proto-runtime.workspace = true
-temporal-proto-runtime-bridge.workspace = true

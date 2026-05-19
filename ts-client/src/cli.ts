@@ -1,11 +1,27 @@
 import { create } from "@bufbuild/protobuf";
-import { Client, Connection } from "@temporalio/client";
+import { type Empty, EmptySchema } from "@bufbuild/protobuf/wkt";
+import { Client, Connection, type WorkflowHandle } from "@temporalio/client";
+import { defineQuery, defineSignal } from "@temporalio/workflow";
 import { createRequire } from "node:module";
 import { parseArgs } from "node:util";
-import { FinishRequestSchema, RunRequestSchema } from "../gen/interop/v1/interop_pb.ts";
-import { InteropServiceClient } from "../gen/interop/v1/interop_temporal.ts";
+import {
+  type FinishRequest,
+  type RunRequest,
+  type RunResponse,
+  type Status,
+  FinishRequestSchema,
+  RunRequestSchema,
+} from "../gen/interop/v1/interop_pb.ts";
+import {
+  FINISH_SIGNAL_NAME,
+  GET_STATUS_QUERY_NAME,
+  RUN_TASK_QUEUE,
+  RUN_WORKFLOW_NAME,
+} from "../gen/interop/v1/interop_temporal.ts";
 
 const require = createRequire(import.meta.url);
+const finishSignal = defineSignal<[FinishRequest]>(FINISH_SIGNAL_NAME);
+const getStatusQuery = defineQuery<Status, [Empty]>(GET_STATUS_QUERY_NAME);
 
 type RunArgs = {
   targetAddress: string;
@@ -32,16 +48,21 @@ async function main(): Promise<void> {
       },
     });
 
-    const interop = new InteropServiceClient(client);
     const input = create(RunRequestSchema, {
       caseId: parsed.caseId,
       customerId: parsed.customerId,
     });
     const workflowId = `interop-${parsed.caseId}`;
-    const run = await interop.run(input, { workflowId });
+    const run = await client.workflow.start<
+      (input: RunRequest) => Promise<RunResponse>
+    >(RUN_WORKFLOW_NAME, {
+      args: [input],
+      taskQueue: RUN_TASK_QUEUE,
+      workflowId,
+    });
     const status = await waitForStatus(run, parsed.caseId);
     const finish = create(FinishRequestSchema, { reason: parsed.finishReason });
-    await run.finish(finish);
+    await run.signal(finishSignal, finish);
     const result = await run.result();
 
     assertEqual(result.caseId, parsed.caseId, "caseId");
@@ -84,7 +105,7 @@ function parseRunArgs(args: string[]): RunArgs {
 }
 
 async function waitForStatus(
-  run: Awaited<ReturnType<InteropServiceClient["run"]>>,
+  run: WorkflowHandle<(input: RunRequest) => Promise<RunResponse>>,
   caseId: string,
 ): Promise<{ stage: string; caseId: string }> {
   const deadline = Date.now() + 15_000;
@@ -92,7 +113,7 @@ async function waitForStatus(
 
   while (Date.now() < deadline) {
     try {
-      const status = await run.getStatus();
+      const status = await run.query(getStatusQuery, create(EmptySchema));
       if (status.caseId === caseId) {
         return { stage: status.stage, caseId: status.caseId };
       }
@@ -131,4 +152,3 @@ main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

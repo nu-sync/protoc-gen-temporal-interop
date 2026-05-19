@@ -1094,7 +1094,6 @@ dependencies = [
  "anyhow",
  "prost 0.13.5",
  "temporal-proto-runtime",
- "temporal-proto-runtime-bridge",
 ]
 
 [[package]]
@@ -2615,22 +2614,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "temporal-proto-runtime-bridge"
-version = "0.1.0"
-source = "git+https://github.com/nu-sync/protoc-gen-rust-temporal?rev=dae1bf54b60e96a643cb3bd6b314bcbf5715f383#dae1bf54b60e96a643cb3bd6b314bcbf5715f383"
-dependencies = [
- "anyhow",
- "prost 0.13.5",
- "prost-wkt-types",
- "temporal-proto-runtime",
- "temporalio-client",
- "temporalio-common",
- "temporalio-sdk",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "temporalio-client"
 version = "0.4.0"
 source = "git+https://github.com/wcygan/sdk-core.git?rev=d5b706e8f0a1c6ec19f04ad53687dbc8df4b7366#d5b706e8f0a1c6ec19f04ad53687dbc8df4b7366"
@@ -3238,8 +3221,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.2",
- "js-sys",
- "wasm-bindgen",
 ]
 
 [[package]]

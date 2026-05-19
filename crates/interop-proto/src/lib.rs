@@ -1,7 +1,6 @@
 #![allow(clippy::all)]
 
-pub use temporal_proto_runtime::{TemporalProtoMessage, TypedProtoMessage};
-pub use temporal_proto_runtime_bridge as temporal_runtime;
+pub use temporal_proto_runtime::{ProtoEmpty, TemporalProtoMessage, TypedProtoMessage};
 
 pub mod interop {
     pub mod v1 {

@@ -37,8 +37,9 @@ RUST_TEMPORAL_REF=dae1bf54b60e96a643cb3bd6b314bcbf5715f383
 ```
 
 The harness performs codegen, Rust checks, TS typecheck, starts a real Temporal
-dev server, starts the Rust worker, runs the generated TS client, and uploads
-diagnostic logs from `.dev-logs/` when CI is configured to do so.
+dev server, starts the Rust worker, runs the TS SDK client that imports
+generated contract constants, and uploads diagnostic logs from `.dev-logs/`
+when CI is configured to do so.
 
 ## Environment Contract
 
@@ -51,9 +52,8 @@ Use these when the Rust generator repo is the local repo under test:
 - `RUST_TEMPORAL_WORKSPACE`: path to the local Rust generator checkout.
 
 `RUST_TEMPORAL_WORKSPACE` is required whenever `RUST_TEMPORAL_PLUGIN` points at
-a local build. The harness patches `temporal-proto-runtime` and
-`temporal-proto-runtime-bridge` to this same workspace so generated code and
-runtime APIs stay source-paired.
+a local build. The harness patches `temporal-proto-runtime` to this same
+workspace so generated code and runtime APIs stay source-paired.
 
 If these are not set, the harness clones `RUST_TEMPORAL_REPOSITORY` and checks
 out `RUST_TEMPORAL_REF` from `pins/versions.env`.
@@ -78,8 +78,8 @@ built.
 | Repository | Local Under Test | Remote Certified Side | Required Overrides |
 |---|---|---|---|
 | `protoc-gen-temporal-interop` | none | pinned Rust + pinned TS | none |
-| `protoc-gen-rust-temporal` | Rust plugin + Rust runtime/bridge | pinned TS generator | `RUST_TEMPORAL_PLUGIN`, `RUST_TEMPORAL_WORKSPACE`, `TS_TEMPORAL_VERSION` |
-| `protoc-gen-ts-temporal` | TS plugin | pinned Rust plugin + runtime/bridge | `TS_TEMPORAL_PLUGIN` |
+| `protoc-gen-rust-temporal` | Rust plugin + Rust runtime | pinned TS generator | `RUST_TEMPORAL_PLUGIN`, `RUST_TEMPORAL_WORKSPACE`, `TS_TEMPORAL_VERSION` |
+| `protoc-gen-ts-temporal` | TS plugin | pinned Rust plugin + runtime | `TS_TEMPORAL_PLUGIN` |
 
 Do not set both `RUST_TEMPORAL_PLUGIN` and `TS_TEMPORAL_PLUGIN` in normal PR CI.
 That tests two moving targets together and is useful only for coordinated
@@ -90,16 +90,17 @@ manual compatibility branches.
 ### Goal
 
 In `protoc-gen-rust-temporal`, prove the local Rust generator plus local
-runtime/bridge still interoperate with the pinned remote TypeScript generator.
+runtime still interoperate with the pinned remote TypeScript generator.
 
 The tested boundary is:
 
 ```text
 local Rust plugin
 local temporal-proto-runtime
-local temporal-proto-runtime-bridge
 pinned remote TS plugin v0.1.0
-generated TS client -> real Temporal server -> generated Rust worker
+handwritten TS SDK client + generated TS contract constants
+  -> real Temporal server
+  -> handwritten Rust worker + generated Rust contract constants
 ```
 
 ### Workflow
@@ -175,7 +176,7 @@ jobs:
 ### Goal
 
 In `protoc-gen-ts-temporal`, prove the local TypeScript generator still
-interoperates with the pinned remote Rust generator/runtime/bridge.
+interoperates with the pinned remote Rust generator/runtime.
 
 The tested boundary is:
 
@@ -183,8 +184,9 @@ The tested boundary is:
 local TS plugin
 pinned remote Rust plugin
 pinned remote temporal-proto-runtime
-pinned remote temporal-proto-runtime-bridge
-generated TS client -> real Temporal server -> generated Rust worker
+handwritten TS SDK client + generated TS contract constants
+  -> real Temporal server
+  -> handwritten Rust worker + generated Rust contract constants
 ```
 
 ### Workflow
@@ -287,8 +289,8 @@ diagnosable without rerunning locally.
 
 - Do not introduce a local Rust plus local TypeScript matrix lane.
 - Do not add release-mode Rust crate matrix testing yet.
-- Do not depend on Rust `0.1.1`; it predates the required bridge and
-  `workflows=true` worker-contract surface.
+- Do not depend on Rust releases that predate the contract-only generator and
+  runtime surface.
 - Do not replace generator repo unit, golden, or payload compatibility tests.
 - Do not change the interop proto while wiring downstream CI unless the harness
   contract itself is intentionally being expanded.
@@ -301,6 +303,5 @@ After both generator repos have passing PR CI:
 - Add scheduled jobs that run against the other repo's `main` branch.
 - Add a manually triggered coordinated branch lane that accepts both local Rust
   and local TypeScript overrides for cross-repo breaking changes.
-- Add release-mode Rust matrix testing only after the Rust generator,
-  `temporal-proto-runtime`, and `temporal-proto-runtime-bridge` ship a
-  coordinated release.
+- Add release-mode Rust matrix testing only after the Rust generator and
+  `temporal-proto-runtime` ship a coordinated release.

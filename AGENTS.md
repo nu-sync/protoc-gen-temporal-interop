@@ -21,7 +21,12 @@ Use Rust 2024 idioms and `rustfmt` output. Keep Rust modules simple and explicit
 
 ## Testing Guidelines
 
-Treat `just test` as the primary acceptance test because it proves the generated TypeScript client can drive the generated Rust worker through a real Temporal dev server. Use `just check` for faster local validation during edits. After changing `proto/`, `buf.gen.yaml`, generator pins, or generated code, run `just gen` before the relevant checks. Do not hand-edit generated files except to inspect diffs.
+Treat `just test` as the primary acceptance test because it proves handwritten
+TypeScript SDK calls using generated contract constants can drive a handwritten
+Rust worker through a real Temporal dev server. Use `just check` for faster
+local validation during edits. After changing `proto/`, `buf.gen.yaml`,
+generator pins, or generated code, run `just gen` before the relevant checks.
+Do not hand-edit generated files except to inspect diffs.
 
 ## Commit & Pull Request Guidelines
 

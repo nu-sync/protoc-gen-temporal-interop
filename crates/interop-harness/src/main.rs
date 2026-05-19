@@ -557,16 +557,10 @@ async fn ensure_ts_checkout(
 
 fn write_cargo_patch_config(paths: &Paths, rust_workspace: &Path) -> Result<()> {
     let runtime_path = rust_workspace.join("crates/temporal-proto-runtime");
-    let bridge_path = rust_workspace.join("crates/temporal-proto-runtime-bridge");
     ensure!(
         runtime_path.join("Cargo.toml").is_file(),
         "missing temporal-proto-runtime crate at {}",
         runtime_path.display()
-    );
-    ensure!(
-        bridge_path.join("Cargo.toml").is_file(),
-        "missing temporal-proto-runtime-bridge crate at {}",
-        bridge_path.display()
     );
 
     let config_dir = paths
@@ -576,10 +570,8 @@ fn write_cargo_patch_config(paths: &Paths, rust_workspace: &Path) -> Result<()> 
     fs::create_dir_all(config_dir).context("create Cargo patch config directory")?;
     let contents = format!(
         "[patch.\"https://github.com/nu-sync/protoc-gen-rust-temporal\"]\n\
-         temporal-proto-runtime = {{ path = \"{}\" }}\n\
-         temporal-proto-runtime-bridge = {{ path = \"{}\" }}\n",
-        toml_path(&runtime_path)?,
-        toml_path(&bridge_path)?
+         temporal-proto-runtime = {{ path = \"{}\" }}\n",
+        toml_path(&runtime_path)?
     );
     fs::write(&paths.cargo_patch_config, contents)
         .with_context(|| format!("write {}", paths.cargo_patch_config.display()))
